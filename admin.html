@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orders | Plant Habitat admin</title>
+<style>
+:root{--g:#0f3d2e;--bg:#f2f6ee;--line:#dbe4d6;--mut:#4d6157}
+*{box-sizing:border-box}
+body{font:16px/1.5 system-ui,sans-serif;margin:0;background:var(--bg);color:#10241b}
+main{max-width:900px;margin:0 auto;padding:16px}
+h1{color:var(--g);margin:0}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+select,input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid #9db3a5}
+button{background:var(--g);color:#fff;cursor:pointer;border-color:var(--g)}
+button.ghost{background:#fff;color:var(--g)}
+button:disabled{opacity:.6}
+small,.mut{color:var(--mut)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+.tabs button{background:#fff;color:var(--g)}
+.tabs button[aria-pressed=true]{background:var(--g);color:#fff}
+.o{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+.o.new{border:2px solid #c8a400;background:#fffdf0}
+.h{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center}
+.badge{display:inline-block;padding:2px 10px;border-radius:99px;background:#e6efe1;color:var(--g);font-size:14px;font-weight:600}
+.badge.r{background:#c8a400;color:#fff}
+.badge.x{background:#eee;color:#666}
+.o p{margin:8px 0}
+.login{max-width:360px;margin:60px auto;background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px}
+.login input{width:100%;margin:10px 0}
+.login button{width:100%}
+.err{color:#b00020;min-height:1.4em}
+.warn{background:#fff3cd;border:1px solid #e0c56a;border-radius:8px;padding:10px 12px;margin:10px 0}
+</style></head><body><main>
+<div class="top"><h1>🌿 Plant Habitat orders</h1><div id="tools"></div></div>
+<div id="app"></div>
+</main>
+<script>
+const SUPABASE_URL='https://jfyvxxkhuelpspnihtri.supabase.co';
+const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpmeXZ4eGtodWVscHNwbmlodHJpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4MDg0NDEsImV4cCI6MjEwNjM4NDQ0MX0.2kjb4AslP-5f6GP-OWklEKf_0ogtlRzhUfhj3WoFIo0';
+const ADMIN_PASSWORD='Y0UrStR0nGPaSsW0rD';
+</script>
+<script>
+var T=sessionStorage.getItem('t'),A=document.getElementById('app'),TL=document.getElementById('tools');
+var ALL=['Received','Confirmed','Preparing','Shipped','Out for delivery','Delivered','Ready for pick-up','Completed','Cancelled'];
+var DONE=['Delivered','Completed','Cancelled'];
+var orders=[],inq=[],seenQ=null,tab='new',seen=null,baseTitle=document.title,ac=null;
+
+function e(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function money(n){return '₱'+Number(n||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}
+
+async function supaQuery(table,method,data,id){
+  let url=SUPABASE_URL+'/rest/v1/'+table;
+  if(id)url+='?id=eq.'+encodeURIComponent(id);
+  const opts={method,headers:{'apikey':SUPABASE_KEY,'Authorization':'Bearer '+SUPABASE_KEY,'Content-Type':'application/json','Prefer':'return=representation'}};
+  if(data)opts.body=JSON.stringify(data);
+  const r=await fetch(url,opts);
+  if(!r.ok){console.error('Supabase error:',r.status,await r.text());throw new Error('Supabase error '+r.status)}
+  return r.json();
+}
+
+function beep(){
+  try{
+    ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+    var o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);
+    o.frequency.value=880;g.gain.value=.15;o.start();o.stop(ac.currentTime+.25);
+  }catch(x){}
+}
+
+function login(msg){
+  TL.innerHTML='';
+  A.innerHTML='<div class="login"><h2 style="margin:0 0 4px">Admin login</h2><input id="pw" type="password" placeholder="Admin password" autocomplete="current-password" autofocus><button id="go">Log in</button><p class="err" id="er">'+e(msg||'')+'</p></div>';
+  var pw=document.getElementById('pw'),go=document.getElementById('go'),er=document.getElementById('er');
+  function submit(){
+    go.disabled=true;er.textContent='';
+    if(pw.value===ADMIN_PASSWORD){T=btoa(pw.value);sessionStorage.setItem('t',T);seen=null;seenQ=null;beep();load()}
+    else{go.disabled=false;er.textContent='Wrong password'}
+  }
+  go.onclick=submit;
+  pw.onkeydown=function(ev){if(ev.key==='Enter')submit()};
+  pw.focus();
+}
+
+function logout(){T=null;sessionStorage.removeItem('t');orders=[];document.title=baseTitle;login()}
+
+function isNew(o){return o.status==='Received'}
+function inTab(o){
+  if(tab==='new')return isNew(o);
+  if(tab==='active')return !isNew(o)&&DONE.indexOf(o.status)<0;
+  if(tab==='done')return DONE.indexOf(o.status)>=0;
+  return true;
+}
+
+function card(o){
+  var a=o.address;
+  var addr=a?'Ship to: '+e([a.street,a.barangay,a.city,a.province,a.region,a.postal,a.country].filter(Boolean).join(', ')):'Pick-up at Plant Habitat';
+  var cls=isNew(o)?'badge r':(o.status==='Cancelled'?'badge x':'badge');
+  return '<div class="o'+(isNew(o)?' new':'')+'">'+
+    '<div class="h"><b>'+e(o.code)+' <span class="'+cls+'">'+e(o.status)+'</span></b><small>'+new Date(o.created).toLocaleString()+'</small></div>'+
+    '<p><b>'+e(o.name)+'</b> · <a href="tel:'+e(o.phone)+'">'+e(o.phone)+'</a>'+(o.email?' · '+e(o.email):'')+'</p>'+
+    '<p>'+(o.items||[]).map(function(i){return e(i.name)+' × '+i.q}).join('<br>')+'</p>'+
+    '<p>Total: <b>'+money(o.total)+'</b> <small>(shipping '+money(o.fee)+')</small></p>'+
+    '<p>'+addr+'</p>'+
+    (o.notes?'<p><small>Notes: '+e(o.notes)+'</small></p>':'')+
+    (o.review?'<p><small>Review: '+'★'.repeat(o.review.rating)+' '+e(o.review.text)+'</small></p>':'')+
+    '<label>Status: <select data-c="'+e(o.code)+'">'+ALL.map(function(s){return '<option'+(s===o.status?' selected':'')+'>'+s+'</option>'}).join('')+'</select></label></div>';
+}
+
+function inqCard(q){
+  var c=e(q.contact),link=/@/.test(q.contact)?'<a href="mailto:'+c+'">'+c+'</a>':'<a href="tel:'+c+'">'+c+'</a>';
+  return '<div class="o'+(q.read?'':' new')+'"><div class="h"><b>'+e(q.name)+' <span class="'+(q.read?'badge':'badge r')+'">'+(q.read?'Read':'New inquiry')+'</span></b><small>'+new Date(q.created).toLocaleString()+'</small></div>'+
+    '<p>'+link+'</p>'+(q.interest?'<p><small>Interested in:</small> <b>'+e(q.interest)+'</b></p>':'')+
+    (q.message?'<p style="white-space:pre-wrap">'+e(q.message)+'</p>':'')+
+    '<button class="ghost" data-read="'+e(q.id)+'" data-v="'+(q.read?'0':'1')+'">'+(q.read?'Mark as unread':'Mark as read')+'</button></div>';
+}
+
+function render(){
+  if(!T)return;
+  var n={new:0,active:0,done:0},nq=inq.filter(function(q){return !q.read}).length;
+  orders.forEach(function(o){if(isNew(o))n.new++;else if(DONE.indexOf(o.status)<0)n.active++;else n.done++});
+  TL.innerHTML='<button class="ghost" id="lo">Log out</button>';
+  document.getElementById('lo').onclick=logout;
+  var tabs=[['new','New ('+n.new+')'],['active','In progress ('+n.active+')'],['done','Finished ('+n.done+')'],['all','All ('+orders.length+')'],['inq','Inquiries ('+nq+')']];
+  var list=tab==='inq'?inq:orders.filter(inTab);
+  A.innerHTML='<div class="tabs">'+tabs.map(function(t){return '<button data-tab="'+t[0]+'" aria-pressed="'+(tab===t[0])+'">'+t[1]+'</button>'}).join('')+'</div>'+
+    (list.length?list.map(tab==='inq'?inqCard:card).join(''):'<p class="mut">'+(tab==='inq'?'No inquiries yet.':'No orders here.')+'</p>')+
+    '<p><small>Updates automatically every 10 seconds.</small></p>';
+  document.title=(n.new+nq?'('+(n.new+nq)+') New · ':'')+baseTitle;
+}
+
+async function load(){
+  try{
+    var l=await supaQuery('orders','GET');
+    var q=await supaQuery('inquiries','GET');
+    if(!Array.isArray(l)||!Array.isArray(q))return;
+    var codes=l.map(function(o){return o.code}),ids=q.map(function(x){return x.id});
+    if((seen&&codes.some(function(c){return seen.indexOf(c)<0}))||(seenQ&&ids.some(function(i){return seenQ.indexOf(i)<0})))beep();
+    seen=codes;seenQ=ids;orders=l.reverse();inq=q.reverse();
+    if(document.activeElement&&document.activeElement.tagName==='SELECT')return;
+    render();
+  }catch(x){
+    if(T&&!orders.length)A.innerHTML='<p class="err">Cannot reach Supabase. Check your credentials.</p>';
+  }
+}
+
+A.onclick=function(ev){
+  var b=ev.target.closest('[data-tab]');
+  if(b){tab=b.getAttribute('data-tab');render();return}
+  var r=ev.target.closest('[data-read]');
+  if(r){r.disabled=true;supaQuery('inquiries','PATCH',{read:r.getAttribute('data-v')==='1'},r.getAttribute('data-read')).then(load,function(){r.disabled=false})}
+};
+A.onchange=function(ev){
+  var c=ev.target.dataset&&ev.target.dataset.c;
+  if(!c)return;
+  ev.target.disabled=true;
+  var o=orders.find(x=>x.code===c);
+  if(!o)return;
+  supaQuery('orders','PATCH',{status:ev.target.value,history:(o.history||[]).concat([{s:ev.target.value,t:Date.now()}])},c)
+    .then(function(){ev.target.blur();load()},function(){ev.target.disabled=false});
+};
+
+if(T)load();else login();
+setInterval(function(){if(T)load()},10000);
+</script></body></html>
